@@ -7,16 +7,16 @@ project(v4l2Test)
 # Find OpenCV, you may need to set OpenCV_DIR variable
 # to the absolute path to the directory containing OpenCVConfig.cmake file
 # via the command line or GUI
-# find_package(LIBV4L2 REQUIRED)
+find_package(SDL REQUIRED)
  
 # If the package has been found, several variables will
 # be set, you can find the full list with descriptions
 # in the OpenCVConfig.cmake file.
 # Print some message showing some of them
-# message(STATUS "OpenCV library status:")
-# message(STATUS "    version: ${OpenCV_VERSION}")
-# message(STATUS "    libraries: ${OpenCV_LIBS}")
-# message(STATUS "    include path: ${OpenCV_INCLUDE_DIRS}")
+# message(STATUS "    SDL library status:")
+# message(STATUS "    version: ${SDL_VERSION}")
+# message(STATUS "    libraries: ${SDL_LIBS}")
+# message(STATUS "    include path: ${SDL_INCLUDE_DIRS}")
  
 # Add OpenCV headers location to your include paths
 # include_directories(${OpenCV_INCLUDE_DIRS})
@@ -31,9 +31,15 @@ target_link_libraries(camera_capture_example)
 add_executable(camera_image_grab camera_image_grab.c)
  
 # Link your application with OpenCV libraries
-target_link_libraries(camera_image_grab)
+target_link_libraries(camera_image_grab /usr/lib/arm-linux-gnueabihf/libSDL.so)
 
 
+ 
+# Declare the executable target built from your sources
+# add_executable(copy copy.cpp)
+ 
+# Link your application with OpenCV libraries
+# target_link_libraries(copy /usr/lib/arm-linux-gnueabihf/libSDL.so)
 
 # FORMAT
 # ioctl: VIDIOC_ENUM_FMT
@@ -67,3 +73,6 @@ target_link_libraries(camera_image_grab)
 # 		Size: Stepwise 32x32 - 2592x1944 with step 2/2
 # 	[13]: 'RX24' (32-bit XBGR 8-8-8-8)
 # 		Size: Stepwise 32x32 - 2592x1944 with step 2/2
+
+
+# raspistill -p -f -t 20000

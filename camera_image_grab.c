@@ -13,10 +13,19 @@
 #include <sys/time.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <SDL/SDL.h>
 
 #include <linux/videodev2.h>
 #include <linux/v4l2-controls.h>
 #include "bmp.h"
+
+#include <SDL/SDL.h>
+#include <assert.h>
+#include <math.h>
+
+/* This macro simplifies accessing a given pixel component on a surface. */
+#define pel(surf, x, y, rgb) ((unsigned char *)(surf->pixels))[y*(surf->pitch)+x*3+rgb]
+
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
@@ -46,13 +55,20 @@ FILE *fout;
 struct buffer *buffers;
 int frame_width = 640;
 int frame_height = 480;
+int frame_count = 100;
 
+int save_iamge_enable = 0;
 struct v4l2_queryctrl queryctrl;
 struct v4l2_querymenu querymenu;
 struct v4l2_control control;
 struct v4l2_query_ext_ctrl query_ext_ctrl;
 
+union SDL_Event event;
+struct SDL_Surface *SDL_scr;
+
+char *save_folder = "./iamge/";
 char *dev_name = "/dev/video0";
+
 int force_format = 1;
 static enum io_method io = IO_METHOD_MMAP;
 
@@ -377,7 +393,7 @@ static void initDevice(void)
         fmt.fmt.pix.height = frame_height;
 
         // fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV; // yuyv format
-        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB24; // yuyv format
+        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_BGR24; // yuyv format
         fmt.fmt.pix.field = V4L2_FIELD_INTERLACED;
 
         if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt))
@@ -544,7 +560,7 @@ int GenBmpFile(const unsigned char *pData, unsigned char bitCountPerPix, unsigne
  
     bmpfile.biInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmpfile.biInfo.bmiHeader.biWidth = width;
-    bmpfile.biInfo.bmiHeader.biHeight = height;
+    bmpfile.biInfo.bmiHeader.biHeight = -height;
     bmpfile.biInfo.bmiHeader.biPlanes = 3;
     bmpfile.biInfo.bmiHeader.biBitCount = bitCountPerPix;
     bmpfile.biInfo.bmiHeader.biCompression = 0;
@@ -557,28 +573,6 @@ int GenBmpFile(const unsigned char *pData, unsigned char bitCountPerPix, unsigne
     fwrite(&(bmpfile.bfHeader), sizeof(BITMAPFILEHEADER), 1, fp);
     fwrite(&(bmpfile.biInfo.bmiHeader), sizeof(BITMAPINFOHEADER), 1, fp);
     fwrite(pData,filesize,1, fp);
-//    unsigned char *pEachLinBuf = (unsigned char*)malloc(bmppitch);
-//    memset(pEachLinBuf, 0, bmppitch);
-//    unsigned char BytePerPix = bitCountPerPix >> 3;
-//    unsigned int pitch = width * BytePerPix;
-//    if(pEachLinBuf)
-//    {
-//        int h,w;
-//        for(h = height-1; h >= 0; h--)
-//        {
-//            for(w = 0; w < width; w++)
-//            {
-//                //copy by a pixel
-//                pEachLinBuf[w*BytePerPix+0] = pData[h*pitch + w*BytePerPix + 0];
-//                pEachLinBuf[w*BytePerPix+1] = pData[h*pitch + w*BytePerPix + 1];
-//                pEachLinBuf[w*BytePerPix+2] = pData[h*pitch + w*BytePerPix + 2];
-//            }
-//            fwrite(pEachLinBuf, bmppitch, 1, fp);
-//
-//        }
-//        free(pEachLinBuf);
-//    }
- 
     fclose(fp);
  
     return 1;
@@ -593,19 +587,75 @@ int GenJpgFile(struct buffer *buffers,const char *filename){
         fclose(fp);
         return 1;
     }
+    return 0; 
+}
+
+int SDL_display_init(void)
+{
+        SDL_Init(SDL_INIT_VIDEO);
+
+        /* Get a 640x480, 24-bit software screen surface */
+        SDL_scr = SDL_SetVideoMode(frame_width, frame_height, 24, SDL_SWSURFACE);
+        assert(SDL_scr);
+}
+
+int SDL_display(const unsigned char *pData)
+{
+    int x, y;
+
+    /* Ensures we have exclusive access to the pixels */
+    SDL_LockSurface(SDL_scr);
+    
+    for(y = 0; y < SDL_scr->h; y++)
+        for(x = 0; x < SDL_scr->w; x++)
+        {
+            // #define pel(surf, x, y, rgb) ((unsigned char *)(surf->pixels))[y*(surf->pitch)+x*3+rgb]
+            pel(SDL_scr, x, y, 0) = *(pData+((y*frame_width)+x)*3 +0); //red
+            pel(SDL_scr, x, y, 1) = *(pData+((y*frame_width)+x)*3 +1); //green
+            pel(SDL_scr, x, y, 2) = *(pData+((y*frame_width)+x)*3 +2); //blue
+            // printf("%d", *(pData + (y * frame_width) + x + 0));
+        }
+    SDL_UnlockSurface(SDL_scr);
+
+    /* Copies the `scr' surface to the _actual_ screen */
+    SDL_UpdateRect(SDL_scr, 0, 0, 0, 0);
     return 0;
 }
 
-
-static void process_image(const void *p, int size)
+int SDL_display_wait2close(void)
 {
-    printf("\n   /////////////////\n    PROCESSING IMAGE\n");
-    printf("image size is : %d \n", size);
-    char picname[100];
-    sprintf(picname,"./niu_%d*%d.bmp",frame_width,frame_height);
-    GenBmpFile(p,24, frame_width,frame_height,picname); 
-    printf("image saved: %s \n", picname);
+    /* Now we wait for an event to arrive */
+    while(SDL_WaitEvent(&event))
+    {
+        /* Any of these event types will end the program */
+        if (event.type == SDL_QUIT
+         || event.type == SDL_KEYDOWN
+         || event.type == SDL_KEYUP)
+            break;
+    }
+    SDL_Quit();
+    return EXIT_SUCCESS;
+}
 
+static void process_image(const void *pic_buffer, int size, int index_image)
+{
+    // printf("\r\n   /////////////////\n    PROCESSING IMAGE\n");
+    printf("\rimage size is : %d  ", size);
+    if (size == frame_width*frame_height*3){
+        if (save_iamge_enable)
+        {
+            char picname[100];
+            sprintf(picname,"%sov5MP_%d*%d_%d.bmp",save_folder ,frame_width,frame_height, index_image);
+            GenBmpFile(pic_buffer,24, frame_width,frame_height,picname); 
+            printf("\rimage saved: %s", picname);
+            printf(", displaying image ");
+            SDL_display(pic_buffer);
+        }
+    }
+    else{
+        printf("image seems not RGB mode, skip RGB process, if any.");
+        
+    }
 }
 
 static int readFrame(void)
@@ -613,100 +663,106 @@ static int readFrame(void)
     printf("\n   /////////////////\n    READ FRAME\n");
 
     struct v4l2_buffer buf;
-    unsigned int i;
+    unsigned int i, count;
+    struct timeval begin, end;
+    gettimeofday(&begin, 0);
 
-    switch (io)
+    for (count = 0; count < frame_count; count ++)
     {
-    case IO_METHOD_READ:
-        if (-1 == read(fd, buffers[0].start, buffers[0].length))
+        gettimeofday(&end, 0);
+        printf(" -- frame rate: %.6f\n", 1/((end.tv_sec - begin.tv_sec) + (end.tv_usec - begin.tv_usec)*1e-6));
+        gettimeofday(&begin, 0);
+        switch (io)
         {
-            switch (errno)
+        case IO_METHOD_READ:
+            if (-1 == read(fd, buffers[0].start, buffers[0].length))
             {
-            case EAGAIN:
-                return 0;
+                switch (errno)
+                {
+                case EAGAIN:
+                    return 0;
 
-            case EIO:
-                /* Could ignore EIO, see spec. */
+                case EIO:
+                    /* Could ignore EIO, see spec. */
 
-                /* fall through */
+                    /* fall through */
 
-            default:
-                errno_exit("read");
+                default:
+                    errno_exit("read");
+                }
             }
-        }
 
-        process_image(buffers[0].start, buffers[0].length);
-        break;
+            process_image(buffers[0].start, buffers[0].length, count);
+            break;
 
-    case IO_METHOD_MMAP: // default mode
-        CLEAR(buf);
+        case IO_METHOD_MMAP: // default mode
+            CLEAR(buf);
 
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-
-
-        while (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) // dqbuf means take out from memory space and to process
-        {
-            switch (errno)
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) // dqbuf means take out from memory space and to process
             {
-            case EAGAIN:
-                printf("there is no image availble yet, please wait...\r");
-                usleep(5000 * 1000);
-                break;
-                // return 0;
-            case EIO:
-                break;
-                /* Could ignore EIO, see spec. */
-                /* fall through */
-            default:
-                errno_exit("VIDIOC_DQBUF");
+                switch (errno)
+                {
+                case EAGAIN:
+                    printf("there is no image availble yet, please wait\r");
+                    while (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) // dqbuf means take out from memory space and to process    
+                    usleep(10);
+                    break;
+                    // return 0;
+                case EIO:
+                    break;
+                    /* Could ignore EIO, see spec. */
+                    /* fall through */
+                default:
+                    errno_exit("VIDIOC_DQBUF");
+                }
+                
             }
-        }
 
-        assert(buf.index < n_buffers);
+            assert(buf.index < n_buffers);
+            process_image(buffers[buf.index].start, buf.bytesused, count); // process each iamge right after getting it, then next., address of dqbuf_buff_address is related to buffers[].start
 
-        process_image(buffers[buf.index].start, buf.bytesused); // process each iamge right after getting it, then next., address of dqbuf_buff_address is related to buffers[].start
+            if (-1 == xioctl(fd, VIDIOC_QBUF, &buf)) // after processing the image data, put the buffer container back query to stream video
+                errno_exit("VIDIOC_QBUF");
+            break;
 
-        if (-1 == xioctl(fd, VIDIOC_QBUF, &buf)) // after processing the image data, put the buffer container back query to stream video
-            errno_exit("VIDIOC_QBUF");
-        break;
+        case IO_METHOD_USERPTR:
+            CLEAR(buf);
 
-    case IO_METHOD_USERPTR:
-        CLEAR(buf);
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_USERPTR;
 
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_USERPTR;
-
-        if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf))
-        {
-            switch (errno)
+            if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf))
             {
-            case EAGAIN:
-                return 0;
+                switch (errno)
+                {
+                case EAGAIN:
+                    return 0;
 
-            case EIO:
-                /* Could ignore EIO, see spec. */
+                case EIO:
+                    /* Could ignore EIO, see spec. */
 
-                /* fall through */
+                    /* fall through */
 
-            default:
-                errno_exit("VIDIOC_DQBUF");
+                default:
+                    errno_exit("VIDIOC_DQBUF");
+                }
             }
+
+            for (i = 0; i < n_buffers; ++i)
+                if (buf.m.userptr == (unsigned long)buffers[i].start && buf.length == buffers[i].length)
+                    break;
+
+            assert(i < n_buffers);
+
+            process_image((void *)buf.m.userptr, buf.bytesused, count);
+
+            if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+                errno_exit("VIDIOC_QBUF");
+            break;
         }
-
-        for (i = 0; i < n_buffers; ++i)
-            if (buf.m.userptr == (unsigned long)buffers[i].start && buf.length == buffers[i].length)
-                break;
-
-        assert(i < n_buffers);
-
-        process_image((void *)buf.m.userptr, buf.bytesused);
-
-        if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-            errno_exit("VIDIOC_QBUF");
-        break;
     }
-
     return 1;
 }
 
@@ -787,8 +843,9 @@ void enumerateMenuList(void)
     {
         if (!(queryctrl.flags & V4L2_CTRL_FLAG_DISABLED))
         {
-            printf("-----\n VIDIOC_QUERYCTRL - Control %s\n", queryctrl.name); // list all supported control of device, like User Controls, Brightness,Saturation,Vertical Flip...
-
+            printf("\n\n\n - : %s ", queryctrl.name);
+            printf(" -----(min,max)=(%d:%d), step=%d, default= %d\n", 
+                queryctrl.minimum, queryctrl.maximum, queryctrl.step, queryctrl.default_value);
             if (queryctrl.type == V4L2_CTRL_TYPE_MENU)
                 enumerateMenu(queryctrl.id); // print out all the possible type of queryctrl.name
         }
@@ -884,6 +941,9 @@ void cameraFunctionsControlExample(void)
     }
     else // if everything is good to set,
     {
+        printf(" - Controlling... %s ", queryctrl.name, "- min, max, step and default ... %d, %d: %d\n", 
+        queryctrl.minimum, queryctrl.maximum, queryctrl.step, queryctrl.default_value);
+
         memset(&control, 0, sizeof(control));
         control.id = V4L2_CID_BRIGHTNESS;        // set function item
         control.value = queryctrl.default_value; // set item value
@@ -895,39 +955,92 @@ void cameraFunctionsControlExample(void)
         }
     }
 
-    //
-    // MEETHOD 2: just read, set the control id and value
-    //
-    memset(&control, 0, sizeof(control));
-    control.id = V4L2_CID_CONTRAST;
+    // //
+    // // MEETHOD 2: just read, set the control id and value
+    // //
+    // memset(&control, 0, sizeof(control));
+    // control.id = V4L2_CID_CONTRAST;
 
-    if (0 == ioctl(fd, VIDIOC_G_CTRL, &control)) // read and get control value.
+    // if (0 == ioctl(fd, VIDIOC_G_CTRL, &control)) // read and get control value.
+    // {
+    //     control.value += 1; // add value
+
+    //     /* The driver may clamp the value or return ERANGE, ignored here */
+
+    //     if (-1 == ioctl(fd, VIDIOC_S_CTRL, &control) && errno != ERANGE) // set and enforce control value
+    //     {
+    //         perror("VIDIOC_S_CTRL");
+    //         exit(EXIT_FAILURE);
+    //     }
+    //     /* Ignore if V4L2_CID_CONTRAST is unsupported */
+    // }
+    // else if (errno != EINVAL)
+    // {
+    //     perror("VIDIOC_G_CTRL");
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // //
+    // // METHOD 3: only set control id and value, without checking whether it is vaild
+    // //
+    // control.id = V4L2_CID_AUDIO_MUTE;
+    // control.value = 1; /* silence */
+
+    // /* Errors ignored */
+    // ioctl(fd, VIDIOC_S_CTRL, &control);
+}
+
+int cameraFunctionsControl(unsigned int fun_id, signed int fun_value)
+{
+
+    printf("\n   /////////////////\n    CAMERA FUNCTION CONTROL\n");
+
+    //
+    // METHOD 1: a.check permission of function b.set the control id and value
+    //
+    memset(&queryctrl, 0, sizeof(queryctrl));
+    queryctrl.id = fun_id; // function is brightness
+
+    if (-1 == ioctl(fd, VIDIOC_QUERYCTRL, &queryctrl)) // if this function can not be read, then aborted.
     {
-        control.value += 1; // add value
+        if (errno != EINVAL)
+        {
+            perror("VIDIOC_QUERYCTRL");
+            exit(EXIT_FAILURE);
+        }
+        else
+        {
+            printf("%s", queryctrl.name, " is not supportedn");
+            return -1;
+        }
+    }
+    else if (queryctrl.flags & V4L2_CTRL_FLAG_DISABLED) // if have no permission to control, then aborted.
+    {
+        printf("%s", queryctrl.name," is not supportedn");
+        return -1;
 
-        /* The driver may clamp the value or return ERANGE, ignored here */
+    }
+    else // if everything is good to set,
+    {
+        printf(" - Controlling: %s ", queryctrl.name, "- min, max, step, default: %d, %d: %d\n", 
+        queryctrl.minimum, queryctrl.maximum, queryctrl.step, queryctrl.default_value);
 
-        if (-1 == ioctl(fd, VIDIOC_S_CTRL, &control) && errno != ERANGE) // set and enforce control value
+        memset(&control, 0, sizeof(control));
+        control.id = fun_id;        // set function item
+        if (fun_value == -1)
+            control.value = queryctrl.default_value;
+        else
+            control.value = fun_value; // set item value
+
+        if (-1 == ioctl(fd, VIDIOC_S_CTRL, &control)) // write and enforce control
         {
             perror("VIDIOC_S_CTRL");
             exit(EXIT_FAILURE);
         }
-        /* Ignore if V4L2_CID_CONTRAST is unsupported */
-    }
-    else if (errno != EINVAL)
-    {
-        perror("VIDIOC_G_CTRL");
-        exit(EXIT_FAILURE);
+        printf("set to %d", control.value);
     }
 
-    //
-    // METHOD 3: only set control id and value, without checking whether it is vaild
-    //
-    control.id = V4L2_CID_AUDIO_MUTE;
-    control.value = 1; /* silence */
-
-    /* Errors ignored */
-    ioctl(fd, VIDIOC_S_CTRL, &control);
+    return 0;
 }
 
 // Extended Control API
@@ -955,27 +1068,122 @@ void enumerateExtendedControl()
     }
 }
 
-// Camera Control reference class
-// set sensor type and ...
 
+static void option_usage(FILE *fp, int argc, char **argv)
+{
+    fprintf(fp,
+            "Usage: %s [options]\n\n"
+            "Version 1.3\n"
+            "Options:\n"
+            "-s | --save image    image folder path name: [%s]\n"
+            "-h | --help          Print this message\n"
+            "-m | --mmap          Use memory mapped buffers [default]\n"
+            "-r | --read          Use read() calls\n"
+            "-u | --userp         Use application allocated buffers\n"
+            "-o | --output        Outputs stream to stdout\n"
+            "-f | --format        Force format to 640x480 YUYV\n"
+            "-c | --count         Number of frames to grab [%i]\n"
+            "\n",
+            argv[0], dev_name, frame_count);
+}
+
+int set_option(int argc, char **argv)
+{
+
+static const char short_options[] = "s:hmruofc:";
+
+static const struct option
+    long_options[] = {
+        {"save", required_argument, NULL, 's'},
+        {"help", no_argument, NULL, 'h'},
+        {"mmap", no_argument, NULL, 'm'},
+        {"read", no_argument, NULL, 'r'},
+        {"userp", no_argument, NULL, 'u'},
+        {"output", no_argument, NULL, 'o'},
+        {"format", no_argument, NULL, 'f'},
+        {"count", required_argument, NULL, 'c'},    
+        {0, 0, 0, 0}};
+
+    for (;;)
+    {
+        int idx;
+        int c;
+
+        c = getopt_long(argc, argv,
+                        short_options, long_options, &idx);
+
+        if (-1 == c)
+            break;
+
+        switch (c)
+        {
+        case 0: /* getopt_long() flag */
+            break;
+
+        case 's':
+            save_iamge_enable = 1;
+            save_folder = optarg;
+            break;
+
+        case 'h':
+            option_usage(stdout, argc, argv);
+            exit(EXIT_SUCCESS);
+
+        case 'm':
+            io = IO_METHOD_MMAP;
+            break;
+
+        case 'r':
+            io = IO_METHOD_READ;
+            break;
+
+        case 'u':
+            io = IO_METHOD_USERPTR;
+            break;
+
+        case 'o':
+            // out_buf++;
+            break;
+
+        case 'f':
+            force_format++;
+            break;
+
+        case 'c':
+            errno = 0;
+            frame_count = strtol(optarg, NULL, 0);
+            if (errno)
+                errno_exit(optarg);
+            break;
+
+        default:
+            option_usage(stderr, argc, argv);
+            exit(EXIT_FAILURE);
+        }
+    }
+}
 int main(int argc, char **argv)
 {
+    set_option(argc, argv); 
     openDevice();
     initDevice();
 
     // selectDevice(checkDeivce());
-    // enumerateMenuList();
+    enumerateMenuList();
     // enumerateExtMenuList();
-    // cameraFunctionsControlExample();
+    cameraFunctionsControl(V4L2_CID_EXPOSURE_AUTO, 1);
+    cameraFunctionsControl(V4L2_CID_EXPOSURE_ABSOLUTE, 100);
     // enumerateExtendedControl();
 
     startCapturing();
+    SDL_display_init();
+
     readFrame();
 
     stopCapturing();
     uninitDevice();
 
     closeDevice();
-
+    SDL_display_wait2close();
     return 0;
 }
